@@ -8,6 +8,7 @@ import requests
 import argparse
 import sys
 import re
+import json
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
@@ -23,8 +24,9 @@ YELLOW = '\033[1;33m'
 BLUE = '\033[0;34m'
 NC = '\033[0m'
 
-# Thread-safe printing
+# Thread-safe printing and tracking
 print_lock = Lock()
+seen_vulnerabilities = set()  # Track unique vulnerabilities
 
 # Test payloads - multiple techniques
 PAYLOADS = [
@@ -103,6 +105,55 @@ def safe_print(message):
     with print_lock:
         print(message)
 
+def send_discord_notification(webhook_url, vulnerability):
+    """
+    Send Discord notification when vulnerability is found
+    """
+    if not webhook_url:
+        return
+
+    try:
+        embed = {
+            "embeds": [{
+                "title": "🚨 Open Redirect Vulnerability Found!",
+                "description": f"**URL:** {vulnerability['original']}\n**Parameter:** {vulnerability['parameter']}",
+                "color": 15158332,  # Red color
+                "fields": [
+                    {
+                        "name": "Vulnerable URL",
+                        "value": f"```{vulnerability['url'][:1000]}```",
+                        "inline": False
+                    },
+                    {
+                        "name": "Payload",
+                        "value": f"`{vulnerability['payload']}`",
+                        "inline": True
+                    },
+                    {
+                        "name": "Status Code",
+                        "value": f"`{vulnerability['status']}`",
+                        "inline": True
+                    },
+                    {
+                        "name": "Detection Method",
+                        "value": f"`{vulnerability['reason']}`",
+                        "inline": False
+                    }
+                ],
+                "footer": {
+                    "text": "Open Redirect Scanner"
+                }
+            }]
+        }
+
+        response = requests.post(webhook_url, json=embed, timeout=10)
+        if response.status_code == 204:
+            safe_print(f"{GREEN}[✓] Discord notification sent{NC}")
+        else:
+            safe_print(f"{YELLOW}[!] Discord notification failed: {response.status_code}{NC}")
+    except Exception as e:
+        safe_print(f"{YELLOW}[!] Failed to send Discord notification: {str(e)}{NC}")
+
 def is_open_redirect(original_url, test_url, response, payload):
     """
     Check if the response indicates an open redirect vulnerability
@@ -147,7 +198,7 @@ def is_open_redirect(original_url, test_url, response, payload):
 
     return False, None
 
-def test_url(url, timeout=10):
+def test_url(url, timeout=10, webhook_url=None):
     """
     Test a single URL for open redirect vulnerabilities
     """
@@ -166,6 +217,13 @@ def test_url(url, timeout=10):
 
         # Test each redirect parameter found
         for param in redirect_params_found:
+            # Create unique identifier for this URL + parameter combination
+            unique_key = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{param}"
+
+            # Skip if we've already found a vulnerability for this URL + parameter
+            if unique_key in seen_vulnerabilities:
+                continue
+
             for payload in PAYLOADS:
                 try:
                     # Create new URL with payload
@@ -195,17 +253,27 @@ def test_url(url, timeout=10):
                     is_vuln, reason = is_open_redirect(url, test_url, response, payload)
 
                     if is_vuln:
-                        result = {
-                            'url': test_url,
-                            'original': url,
-                            'parameter': param,
-                            'payload': payload,
-                            'reason': reason,
-                            'status': response.status_code
-                        }
-                        results.append(result)
-                        safe_print(f"{RED}[VULNERABLE]{NC} {test_url}")
-                        safe_print(f"  └─ Parameter: {param} | Payload: {payload} | Reason: {reason}")
+                        # Add to seen vulnerabilities set
+                        with print_lock:
+                            if unique_key not in seen_vulnerabilities:
+                                seen_vulnerabilities.add(unique_key)
+
+                                result = {
+                                    'url': test_url,
+                                    'original': url,
+                                    'parameter': param,
+                                    'payload': payload,
+                                    'reason': reason,
+                                    'status': response.status_code
+                                }
+                                results.append(result)
+
+                                safe_print(f"{RED}[VULNERABLE]{NC} {test_url}")
+                                safe_print(f"  └─ Parameter: {param} | Payload: {payload} | Reason: {reason}")
+
+                                # Send Discord notification
+                                send_discord_notification(webhook_url, result)
+
                         break  # Found vulnerability, no need to test more payloads for this param
 
                 except requests.exceptions.RequestException:
@@ -219,7 +287,7 @@ def test_url(url, timeout=10):
 
     return results
 
-def test_urls_from_file(input_file, output_file, threads=50):
+def test_urls_from_file(input_file, output_file, threads=50, webhook_url=None):
     """
     Test multiple URLs from a file
     """
@@ -233,11 +301,14 @@ def test_urls_from_file(input_file, output_file, threads=50):
     total = len(urls)
     safe_print(f"{BLUE}[*] Testing {total} URLs with {threads} threads...{NC}\n")
 
+    if webhook_url:
+        safe_print(f"{GREEN}[*] Discord notifications enabled{NC}\n")
+
     all_results = []
     completed = 0
 
     with ThreadPoolExecutor(max_workers=threads) as executor:
-        future_to_url = {executor.submit(test_url, url): url for url in urls}
+        future_to_url = {executor.submit(test_url, url, 10, webhook_url): url for url in urls}
 
         for future in as_completed(future_to_url):
             completed += 1
@@ -289,10 +360,11 @@ def main():
     parser.add_argument('-o', '--output', required=True, help='Output file for results')
     parser.add_argument('-t', '--threads', type=int, default=50, help='Number of threads (default: 50)')
     parser.add_argument('--timeout', type=int, default=10, help='Request timeout in seconds (default: 10)')
+    parser.add_argument('-w', '--webhook', help='Discord webhook URL for notifications')
 
     args = parser.parse_args()
 
-    test_urls_from_file(args.list, args.output, args.threads)
+    test_urls_from_file(args.list, args.output, args.threads, args.webhook)
 
 if __name__ == '__main__':
     main()

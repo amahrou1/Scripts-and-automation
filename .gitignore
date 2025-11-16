@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Scan results
+open-redirect-results/
+*.txt
+!subdomains.txt.example
+
+# Configuration (may contain sensitive data)
+config.sh
+
+# OS files
+.DS_Store
+Thumbs.db

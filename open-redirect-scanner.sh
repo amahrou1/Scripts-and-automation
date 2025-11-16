@@ -11,6 +11,12 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Load configuration if exists
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/config.sh" ]]; then
+    source "$SCRIPT_DIR/config.sh"
+fi
+
 # Banner
 echo -e "${BLUE}"
 cat << "EOF"
@@ -23,11 +29,14 @@ cat << "EOF"
 EOF
 echo -e "${NC}"
 
-# Default values
+# Default values (can be overridden by config.sh or command line args)
 INPUT_FILE=""
 OUTPUT_DIR="open-redirect-results"
 THREADS=50
 VERBOSE=false
+# DISCORD_WEBHOOK and VT_API_KEY can be set in config.sh
+: ${DISCORD_WEBHOOK:=""}
+: ${VT_API_KEY:=""}
 
 # Help function
 usage() {
@@ -38,11 +47,13 @@ usage() {
     echo "  -l, --list        Input file containing subdomains (required)"
     echo "  -o, --output      Output directory (default: open-redirect-results)"
     echo "  -t, --threads     Number of threads (default: 50)"
+    echo "  -w, --webhook     Discord webhook URL for notifications"
+    echo "  -k, --vtkey       VirusTotal API key for URL collection"
     echo "  -v, --verbose     Verbose output"
     echo "  -h, --help        Show this help message"
     echo ""
     echo -e "${GREEN}Example:${NC}"
-    echo "  $0 -l subdomains.txt -o results -t 100"
+    echo "  $0 -l subdomains.txt -o results -t 100 -w <webhook_url> -k <vt_api_key>"
     exit 1
 }
 
@@ -59,6 +70,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         -t|--threads)
             THREADS="$2"
+            shift 2
+            ;;
+        -w|--webhook)
+            DISCORD_WEBHOOK="$2"
+            shift 2
+            ;;
+        -k|--vtkey)
+            VT_API_KEY="$2"
             shift 2
             ;;
         -v|--verbose)
@@ -128,7 +147,36 @@ log "${YELLOW}[2/6] Gathering URLs from multiple sources...${NC}"
 # Initialize empty URLs file
 > "$URLS_FILE"
 
-# 2a. Wayback Machine
+# 2a. VirusTotal
+if [[ -n "$VT_API_KEY" ]]; then
+    log "${BLUE}  [*] Fetching from VirusTotal...${NC}"
+    VT_TEMP="$OUTPUT_DIR/virustotal_temp.txt"
+    VT_COUNT=0
+
+    while IFS= read -r domain; do
+        # Extract domain from URL
+        DOMAIN=$(echo "$domain" | sed -e 's|^https\?://||' -e 's|/.*||')
+
+        # Query VirusTotal API
+        VT_RESPONSE=$(curl -s --request GET \
+            --url "https://www.virustotal.com/api/v3/domains/$DOMAIN/urls?limit=40" \
+            --header "x-apikey: $VT_API_KEY" 2>/dev/null)
+
+        # Extract URLs from response
+        echo "$VT_RESPONSE" | grep -oP '"url":\s*"\K[^"]+' >> "$VT_TEMP" 2>/dev/null
+
+        sleep 0.5  # Rate limiting
+    done < "$LIVE_HOSTS"
+
+    if [[ -f "$VT_TEMP" ]]; then
+        cat "$VT_TEMP" >> "$URLS_FILE"
+        VT_COUNT=$(wc -l < "$VT_TEMP" 2>/dev/null || echo 0)
+        log "${GREEN}  [✓] VirusTotal URLs: $VT_COUNT${NC}"
+        rm -f "$VT_TEMP"
+    fi
+fi
+
+# 2b. Wayback Machine
 if command -v waybackurls &> /dev/null; then
     log "${BLUE}  [*] Fetching from Wayback Machine...${NC}"
     cat "$LIVE_HOSTS" | waybackurls | tee -a "$URLS_FILE" > /dev/null
@@ -136,7 +184,7 @@ if command -v waybackurls &> /dev/null; then
     log "${GREEN}  [✓] Wayback URLs: $WB_COUNT${NC}"
 fi
 
-# 2b. GAU (GetAllUrls)
+# 2c. GAU (GetAllUrls)
 if command -v gau &> /dev/null; then
     log "${BLUE}  [*] Fetching from GAU (Common Crawl, Wayback, etc.)...${NC}"
     GAU_TEMP="$OUTPUT_DIR/gau_temp.txt"
@@ -145,7 +193,7 @@ if command -v gau &> /dev/null; then
     rm -f "$GAU_TEMP"
 fi
 
-# 2c. Katana (web crawler)
+# 2d. Katana (web crawler)
 if command -v katana &> /dev/null; then
     log "${BLUE}  [*] Crawling with Katana...${NC}"
     KATANA_TEMP="$OUTPUT_DIR/katana_temp.txt"
@@ -154,7 +202,7 @@ if command -v katana &> /dev/null; then
     rm -f "$KATANA_TEMP"
 fi
 
-# 2d. Hakrawler
+# 2e. Hakrawler
 if command -v hakrawler &> /dev/null; then
     log "${BLUE}  [*] Crawling with Hakrawler...${NC}"
     HAKRAWLER_TEMP="$OUTPUT_DIR/hakrawler_temp.txt"
@@ -212,7 +260,15 @@ else
     # Use Python script for testing
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     if [[ -f "$SCRIPT_DIR/test-redirects.py" ]]; then
-        python3 "$SCRIPT_DIR/test-redirects.py" -l "$VALID_URLS" -o "$VULNERABLE_FILE" -t "$THREADS"
+        # Build command with optional webhook
+        PYTHON_CMD="python3 \"$SCRIPT_DIR/test-redirects.py\" -l \"$VALID_URLS\" -o \"$VULNERABLE_FILE\" -t \"$THREADS\""
+
+        if [[ -n "$DISCORD_WEBHOOK" ]]; then
+            PYTHON_CMD="$PYTHON_CMD -w \"$DISCORD_WEBHOOK\""
+            log "${GREEN}[*] Discord webhook configured${NC}"
+        fi
+
+        eval $PYTHON_CMD
     else
         log "${RED}[!] test-redirects.py not found, skipping vulnerability testing${NC}"
         log "${YELLOW}[!] Please run the installation script or place test-redirects.py in the same directory${NC}"

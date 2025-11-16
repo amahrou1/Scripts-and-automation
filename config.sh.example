@@ -1,0 +1,10 @@
+# Open Redirect Scanner Configuration
+# Copy this file to config.sh and fill in your credentials
+
+# Discord webhook URL for vulnerability notifications
+# Get your webhook from Discord: Server Settings > Integrations > Webhooks
+DISCORD_WEBHOOK="your_discord_webhook_url_here"
+
+# VirusTotal API key for URL collection
+# Get your API key from: https://www.virustotal.com/gui/my-apikey
+VT_API_KEY="your_virustotal_api_key_here"
