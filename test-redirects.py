@@ -9,6 +9,7 @@ import argparse
 import sys
 import re
 import json
+import time
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
@@ -113,6 +114,9 @@ def send_discord_notification(webhook_url, vulnerability):
         return
 
     try:
+        # Rate limiting - wait between notifications to avoid Discord rate limits
+        time.sleep(0.5)
+
         embed = {
             "embeds": [{
                 "title": "🚨 Open Redirect Vulnerability Found!",
@@ -146,13 +150,18 @@ def send_discord_notification(webhook_url, vulnerability):
             }]
         }
 
-        response = requests.post(webhook_url, json=embed, timeout=10)
+        # Reduced timeout from 10s to 3s to prevent hanging
+        response = requests.post(webhook_url, json=embed, timeout=3)
         if response.status_code == 204:
             safe_print(f"{GREEN}[✓] Discord notification sent{NC}")
         else:
-            safe_print(f"{YELLOW}[!] Discord notification failed: {response.status_code}{NC}")
+            safe_print(f"{YELLOW}[!] Discord notification failed: HTTP {response.status_code}{NC}")
+    except requests.exceptions.Timeout:
+        safe_print(f"{YELLOW}[!] Discord notification timeout - continuing scan{NC}")
+    except requests.exceptions.RequestException as e:
+        safe_print(f"{YELLOW}[!] Discord notification error: {type(e).__name__} - continuing scan{NC}")
     except Exception as e:
-        safe_print(f"{YELLOW}[!] Failed to send Discord notification: {str(e)}{NC}")
+        safe_print(f"{YELLOW}[!] Discord error: {str(e)[:50]} - continuing scan{NC}")
 
 def is_open_redirect(original_url, test_url, response, payload):
     """
