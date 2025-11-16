@@ -167,17 +167,54 @@ def is_open_redirect(original_url, test_url, response, payload):
     """
     Check if the response indicates an open redirect vulnerability
     """
+    # Test domains to check for
+    test_domains = ['evil.com', 'google.com', 'redirect-test.com', 'burpcollaborator.net']
+
     # Check status codes that indicate redirects
     if response.status_code in [301, 302, 303, 307, 308]:
         location = response.headers.get('Location', '')
 
-        # Check if location header contains our payload
-        if any(domain in location.lower() for domain in ['evil.com', 'google.com', 'redirect-test.com']):
-            return True, f"Redirect to external domain: {location}"
+        if not location:
+            return False, None
 
-        # Check for protocol-relative redirects
-        if location.startswith('//') and 'evil.com' in location:
-            return True, f"Protocol-relative redirect: {location}"
+        # Handle protocol-relative redirects (//evil.com)
+        if location.startswith('//'):
+            # Extract domain from protocol-relative URL
+            redirect_domain = location.split('/')[2].lower() if len(location.split('/')) > 2 else ''
+            if any(domain in redirect_domain for domain in test_domains):
+                return True, f"Protocol-relative redirect to external domain: {location}"
+
+        # Parse the Location header to extract the actual redirect domain
+        try:
+            # Handle relative redirects (starts with /)
+            if location.startswith('/'):
+                # Relative redirect - not an open redirect
+                return False, None
+
+            # Parse the redirect URL
+            parsed_redirect = urlparse(location)
+            redirect_domain = parsed_redirect.netloc.lower()
+
+            # Get the original domain for comparison
+            original_parsed = urlparse(original_url)
+            original_domain = original_parsed.netloc.lower()
+
+            # Check if redirecting to one of our test domains
+            # Must be the ACTUAL domain being redirected to, not just in parameters
+            if any(domain in redirect_domain and domain != original_domain for domain in test_domains):
+                # Additional validation: make sure it's not just in a parameter
+                # The domain should be the netloc itself
+                for test_domain in test_domains:
+                    if redirect_domain == test_domain or redirect_domain.endswith('.' + test_domain):
+                        return True, f"HTTP redirect to external domain: {location}"
+
+        except Exception:
+            # If parsing fails, check if it's a simple domain redirect
+            location_lower = location.lower()
+            # Only flag if the test domain appears at the start (not in parameters)
+            for test_domain in test_domains:
+                if location_lower.startswith(f'http://{test_domain}') or location_lower.startswith(f'https://{test_domain}') or location_lower.startswith(f'//{test_domain}'):
+                    return True, f"Redirect to external domain: {location}"
 
     # Check response body for meta refresh or JavaScript redirects
     if response.status_code == 200:
@@ -187,8 +224,18 @@ def is_open_redirect(original_url, test_url, response, payload):
         meta_refresh = re.search(r'<meta[^>]*http-equiv=["\']refresh["\'][^>]*content=["\'][^"\']*url=([^"\']+)', content, re.IGNORECASE)
         if meta_refresh:
             redirect_url = meta_refresh.group(1)
-            if any(domain in redirect_url for domain in ['evil.com', 'google.com', 'redirect-test.com']):
-                return True, f"Meta refresh redirect: {redirect_url}"
+            try:
+                parsed_meta = urlparse(redirect_url)
+                meta_domain = parsed_meta.netloc.lower()
+
+                for test_domain in test_domains:
+                    if meta_domain == test_domain or meta_domain.endswith('.' + test_domain):
+                        return True, f"Meta refresh redirect to external domain: {redirect_url}"
+            except Exception:
+                # Fallback to simple check
+                for test_domain in test_domains:
+                    if redirect_url.lower().startswith(f'http://{test_domain}') or redirect_url.lower().startswith(f'https://{test_domain}'):
+                        return True, f"Meta refresh redirect: {redirect_url}"
 
         # JavaScript redirect check
         js_patterns = [
@@ -202,8 +249,18 @@ def is_open_redirect(original_url, test_url, response, payload):
             js_redirect = re.search(pattern, content, re.IGNORECASE)
             if js_redirect:
                 redirect_url = js_redirect.group(1)
-                if any(domain in redirect_url for domain in ['evil.com', 'google.com', 'redirect-test.com']):
-                    return True, f"JavaScript redirect: {redirect_url}"
+                try:
+                    parsed_js = urlparse(redirect_url)
+                    js_domain = parsed_js.netloc.lower()
+
+                    for test_domain in test_domains:
+                        if js_domain == test_domain or js_domain.endswith('.' + test_domain):
+                            return True, f"JavaScript redirect to external domain: {redirect_url}"
+                except Exception:
+                    # Fallback to simple check
+                    for test_domain in test_domains:
+                        if redirect_url.lower().startswith(f'http://{test_domain}') or redirect_url.lower().startswith(f'https://{test_domain}'):
+                            return True, f"JavaScript redirect: {redirect_url}"
 
     return False, None
 
