@@ -1,0 +1,12 @@
+# Example URLs for testing
+# Replace with your target URLs
+
+http://testphp.vulnweb.com/redir.php?r=http://example.com
+http://example.com/redirect?url=https://example.com
+http://example.com/login?next=/dashboard
+http://example.com/auth?return=https://example.com/profile
+http://api.example.com/oauth/callback?redirect_uri=http://localhost
+
+# You can generate URLs using:
+# cat domains.txt | waybackurls | grep -E "(redirect|url|next|return)" > urls.txt
+# cat domains.txt | gau | grep -E "(redirect|url|next|return)" > urls.txt
