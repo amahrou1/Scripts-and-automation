@@ -399,24 +399,12 @@ func checkOpenRedirect(testURL, originalURL, payload string) (bool, string) {
 			return false, ""
 		}
 
-		// Check if redirect goes to our payload domain
+		// ONLY check if redirect DOMAIN matches payload domain
+		// Do NOT check query parameters - that's just parameter reflection, not open redirect
 		if payloadDomain != "" {
 			if redirectDomain == payloadDomain || strings.HasSuffix(redirectDomain, "."+payloadDomain) {
 				return true, fmt.Sprintf("HTTP %d redirect to payload domain: %s (redirected to: %s)", resp.StatusCode, payloadDomain, location)
 			}
-		}
-
-		// Also check if redirect URL contains the full payload (for exact matches)
-		locationLower := strings.ToLower(location)
-		payloadLower := strings.ToLower(payload)
-		// Remove protocol and slashes for comparison
-		payloadClean := strings.TrimPrefix(payloadLower, "https://")
-		payloadClean = strings.TrimPrefix(payloadClean, "http://")
-		payloadClean = strings.TrimPrefix(payloadClean, "//")
-		payloadClean = strings.TrimSuffix(payloadClean, "/")
-
-		if payloadClean != "" && strings.Contains(locationLower, payloadClean) {
-			return true, fmt.Sprintf("HTTP %d redirect contains payload: %s", resp.StatusCode, location)
 		}
 	}
 
@@ -443,10 +431,6 @@ func checkOpenRedirect(testURL, originalURL, payload string) (bool, string) {
 				}
 			}
 
-			// Check if meta refresh contains payload
-			if payloadDomain != "" && strings.Contains(strings.ToLower(redirectURL), payloadDomain) {
-				return true, fmt.Sprintf("Meta refresh contains payload domain: %s", redirectURL)
-			}
 		}
 
 		// Check JavaScript redirects
@@ -471,10 +455,6 @@ func checkOpenRedirect(testURL, originalURL, payload string) (bool, string) {
 					}
 				}
 
-				// Check if JS redirect contains payload
-				if payloadDomain != "" && strings.Contains(strings.ToLower(redirectURL), payloadDomain) {
-					return true, fmt.Sprintf("JavaScript redirect contains payload domain: %s", redirectURL)
-				}
 			}
 		}
 	}
