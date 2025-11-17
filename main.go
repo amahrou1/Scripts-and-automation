@@ -359,6 +359,9 @@ func checkOpenRedirect(testURL, originalURL, payload string) (bool, string) {
 	}
 	defer resp.Body.Close()
 
+	// Extract the domain from our payload to check if redirect goes there
+	payloadDomain := extractDomainFromPayload(payload)
+
 	// Check HTTP redirects (3xx status codes)
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		location := resp.Header.Get("Location")
@@ -369,25 +372,19 @@ func checkOpenRedirect(testURL, originalURL, payload string) (bool, string) {
 		// Parse redirect location
 		redirectURL, err := url.Parse(location)
 		if err != nil {
-			// Try simple string matching
+			// Try simple string matching for malformed URLs
 			locationLower := strings.ToLower(location)
-			for _, domain := range testDomains {
-				if strings.HasPrefix(locationLower, "http://"+domain) ||
-					strings.HasPrefix(locationLower, "https://"+domain) ||
-					strings.HasPrefix(locationLower, "//"+domain) {
-					return true, fmt.Sprintf("HTTP %d redirect to: %s", resp.StatusCode, location)
-				}
+			if payloadDomain != "" && strings.Contains(locationLower, payloadDomain) {
+				return true, fmt.Sprintf("HTTP %d redirect contains payload domain: %s", resp.StatusCode, location)
 			}
 			return false, ""
 		}
 
-		// Handle protocol-relative URLs
+		// Handle protocol-relative URLs (//evil.com)
 		if strings.HasPrefix(location, "//") {
 			redirectDomain := strings.ToLower(redirectURL.Host)
-			for _, domain := range testDomains {
-				if redirectDomain == domain || strings.HasSuffix(redirectDomain, "."+domain) {
-					return true, fmt.Sprintf("Protocol-relative redirect to: %s", location)
-				}
+			if payloadDomain != "" && (redirectDomain == payloadDomain || strings.HasSuffix(redirectDomain, "."+payloadDomain)) {
+				return true, fmt.Sprintf("Protocol-relative redirect to payload domain: %s", location)
 			}
 		}
 
@@ -396,25 +393,30 @@ func checkOpenRedirect(testURL, originalURL, payload string) (bool, string) {
 			return false, ""
 		}
 
-		// Parse original URL to get original domain
-		origURL, _ := url.Parse(originalURL)
-		origDomain := strings.ToLower(origURL.Host)
+		// Get redirect domain
 		redirectDomain := strings.ToLower(redirectURL.Host)
+		if redirectDomain == "" {
+			return false, ""
+		}
 
-		// First check if redirecting to our test domains (high confidence)
-		for _, domain := range testDomains {
-			if (redirectDomain == domain || strings.HasSuffix(redirectDomain, "."+domain)) && redirectDomain != origDomain {
-				return true, fmt.Sprintf("HTTP %d redirect to external domain: %s", resp.StatusCode, location)
+		// Check if redirect goes to our payload domain
+		if payloadDomain != "" {
+			if redirectDomain == payloadDomain || strings.HasSuffix(redirectDomain, "."+payloadDomain) {
+				return true, fmt.Sprintf("HTTP %d redirect to payload domain: %s (redirected to: %s)", resp.StatusCode, payloadDomain, location)
 			}
 		}
 
-		// Also check if redirecting to ANY external domain (not just test domains)
-		// This catches real-world redirects like bing.com, etc.
-		if redirectDomain != "" && redirectDomain != origDomain && !strings.HasSuffix(origDomain, redirectDomain) {
-			// Make sure it's not a subdomain of the original
-			if !strings.HasSuffix(redirectDomain, "."+origDomain) {
-				return true, fmt.Sprintf("HTTP %d redirect to external domain: %s (domain: %s)", resp.StatusCode, location, redirectDomain)
-			}
+		// Also check if redirect URL contains the full payload (for exact matches)
+		locationLower := strings.ToLower(location)
+		payloadLower := strings.ToLower(payload)
+		// Remove protocol and slashes for comparison
+		payloadClean := strings.TrimPrefix(payloadLower, "https://")
+		payloadClean = strings.TrimPrefix(payloadClean, "http://")
+		payloadClean = strings.TrimPrefix(payloadClean, "//")
+		payloadClean = strings.TrimSuffix(payloadClean, "/")
+
+		if payloadClean != "" && strings.Contains(locationLower, payloadClean) {
+			return true, fmt.Sprintf("HTTP %d redirect contains payload: %s", resp.StatusCode, location)
 		}
 	}
 
@@ -434,20 +436,16 @@ func checkOpenRedirect(testURL, originalURL, payload string) (bool, string) {
 			redirectURL := matches[1]
 			if parsedRedir, err := url.Parse(redirectURL); err == nil {
 				redirDomain := strings.ToLower(parsedRedir.Host)
-				origURL, _ := url.Parse(originalURL)
-				origDomain := strings.ToLower(origURL.Host)
 
-				// Check test domains first
-				for _, domain := range testDomains {
-					if redirDomain == domain || strings.HasSuffix(redirDomain, "."+domain) {
-						return true, fmt.Sprintf("Meta refresh redirect to: %s", redirectURL)
-					}
+				// Check if meta refresh goes to payload domain
+				if payloadDomain != "" && (redirDomain == payloadDomain || strings.HasSuffix(redirDomain, "."+payloadDomain)) {
+					return true, fmt.Sprintf("Meta refresh redirect to payload domain: %s", redirectURL)
 				}
+			}
 
-				// Check ANY external domain
-				if redirDomain != "" && redirDomain != origDomain && !strings.HasSuffix(redirDomain, "."+origDomain) {
-					return true, fmt.Sprintf("Meta refresh redirect to external domain: %s (domain: %s)", redirectURL, redirDomain)
-				}
+			// Check if meta refresh contains payload
+			if payloadDomain != "" && strings.Contains(strings.ToLower(redirectURL), payloadDomain) {
+				return true, fmt.Sprintf("Meta refresh contains payload domain: %s", redirectURL)
 			}
 		}
 
@@ -466,26 +464,58 @@ func checkOpenRedirect(testURL, originalURL, payload string) (bool, string) {
 				redirectURL := matches[1]
 				if parsedRedir, err := url.Parse(redirectURL); err == nil {
 					redirDomain := strings.ToLower(parsedRedir.Host)
-					origURL, _ := url.Parse(originalURL)
-					origDomain := strings.ToLower(origURL.Host)
 
-					// Check test domains first
-					for _, domain := range testDomains {
-						if redirDomain == domain || strings.HasSuffix(redirDomain, "."+domain) {
-							return true, fmt.Sprintf("JavaScript redirect to: %s", redirectURL)
-						}
+					// Check if JS redirect goes to payload domain
+					if payloadDomain != "" && (redirDomain == payloadDomain || strings.HasSuffix(redirDomain, "."+payloadDomain)) {
+						return true, fmt.Sprintf("JavaScript redirect to payload domain: %s", redirectURL)
 					}
+				}
 
-					// Check ANY external domain
-					if redirDomain != "" && redirDomain != origDomain && !strings.HasSuffix(redirDomain, "."+origDomain) {
-						return true, fmt.Sprintf("JavaScript redirect to external domain: %s (domain: %s)", redirectURL, redirDomain)
-					}
+				// Check if JS redirect contains payload
+				if payloadDomain != "" && strings.Contains(strings.ToLower(redirectURL), payloadDomain) {
+					return true, fmt.Sprintf("JavaScript redirect contains payload domain: %s", redirectURL)
 				}
 			}
 		}
 	}
 
 	return false, ""
+}
+
+// extractDomainFromPayload extracts the domain from various payload formats
+func extractDomainFromPayload(payload string) string {
+	payload = strings.TrimSpace(payload)
+	payloadLower := strings.ToLower(payload)
+
+	// Skip non-URL payloads
+	if strings.HasPrefix(payloadLower, "javascript:") ||
+		strings.HasPrefix(payloadLower, "data:") {
+		return ""
+	}
+
+	// Handle protocol-relative URLs (//evil.com)
+	if strings.HasPrefix(payload, "//") {
+		payload = "http:" + payload
+	}
+
+	// Add http:// if no protocol
+	if !strings.HasPrefix(payloadLower, "http://") && !strings.HasPrefix(payloadLower, "https://") {
+		payload = "http://" + payload
+	}
+
+	// Parse URL
+	parsed, err := url.Parse(payload)
+	if err != nil {
+		return ""
+	}
+
+	domain := strings.ToLower(parsed.Host)
+	// Remove port if present
+	if strings.Contains(domain, ":") {
+		domain = strings.Split(domain, ":")[0]
+	}
+
+	return domain
 }
 
 func sendDiscordNotification(vuln Vulnerability) {
