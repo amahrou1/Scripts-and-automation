@@ -58,6 +58,16 @@ chmod +x xss-scanner
 ./xss-scanner -f urls.txt -c 100 -t 15
 ```
 
+### With Output Directory
+
+```bash
+# Save results to a directory
+./xss-scanner -f urls.txt -o results
+
+# With Discord notifications and output directory
+./xss-scanner -f urls.txt -o xss-findings -discord https://discord.com/api/webhooks/...
+```
+
 ### Options
 
 ```
@@ -69,6 +79,8 @@ chmod +x xss-scanner
     HTTP timeout in seconds (default 10)
 -discord string
     Discord webhook URL for notifications
+-o string
+    Output directory to save results (optional)
 ```
 
 ## Input Format
@@ -90,6 +102,88 @@ You can store your Discord webhook in `../config.sh`:
 ```bash
 DISCORD_WEBHOOK="https://discord.com/api/webhooks/YOUR_WEBHOOK"
 ```
+
+## Output Files
+
+When you use the `-o` flag, the scanner creates a directory with detailed vulnerability reports:
+
+### Directory Structure
+
+```
+results/
+├── summary.txt                           # Quick overview of all vulnerabilities
+├── summary.json                          # JSON format for easy parsing
+├── 20241117-103045_example.com_q_HTML_Body.txt
+├── 20241117-103045_example.com_q_HTML_Body.json
+├── 20241117-103112_test.com_id_JavaScript_String.txt
+└── 20241117-103112_test.com_id_JavaScript_String.json
+```
+
+### File Types
+
+**1. Individual Vulnerability Reports (.txt)**
+```
+XSS Vulnerability Report
+========================
+Timestamp: 2024-11-17T10:30:45Z
+URL: https://example.com/search?q=test
+Parameter: q
+Context: HTML Body
+Payload: <img src=x onerror=alert(1)>
+
+Reproduction Steps:
+1. Navigate to: https://example.com/search?q=test
+2. Parameter 'q' is vulnerable to XSS
+3. Test payload: <img src=x onerror=alert(1)>
+
+Severity: High (Reflected XSS)
+```
+
+**2. Individual Vulnerability Reports (.json)**
+```json
+{
+  "timestamp": "2024-11-17T10:30:45Z",
+  "url": "https://example.com/search?q=test",
+  "parameter": "q",
+  "context": "HTML Body",
+  "payload": "<img src=x onerror=alert(1)>"
+}
+```
+
+**3. Summary Files**
+
+`summary.txt` - Quick overview:
+```
+[2024-11-17 10:30:45] https://example.com/search?q=test | Param: q | Context: HTML Body | Payload: <img src=x onerror=alert(1)>
+[2024-11-17 10:31:12] https://test.com/page?id=123 | Param: id | Context: JavaScript String | Payload: ";alert(1)//
+```
+
+`summary.json` - All vulnerabilities in JSON array:
+```json
+[
+  {
+    "timestamp": "2024-11-17T10:30:45Z",
+    "url": "https://example.com/search?q=test",
+    "parameter": "q",
+    "context": "HTML Body",
+    "payload": "<img src=x onerror=alert(1)>"
+  },
+  {
+    "timestamp": "2024-11-17T10:31:12Z",
+    "url": "https://test.com/page?id=123",
+    "parameter": "id",
+    "context": "JavaScript String",
+    "payload": "\";alert(1)//"
+  }
+]
+```
+
+### Use Cases
+
+- **Bug Bounty Reports**: Use individual .txt files as report templates
+- **Automation**: Parse summary.json for integration with other tools
+- **Evidence**: Keep detailed records of all findings
+- **Collaboration**: Share results directory with team members
 
 ## Detection Contexts
 
@@ -157,6 +251,7 @@ The scanner reduces false positives by:
 [+] Loaded 1000 URLs
 [+] Found 234 URLs with parameters
 [+] Discord notifications enabled
+[+] Results will be saved to: results
 [*] Progress: 234/234 (100.0%) | Rate: 45 URLs/s | Reflected: 12 | Vulnerable: 3 | ETA: 0s
 
 [!] VULNERABLE: https://example.com/search?q=test
@@ -171,6 +266,8 @@ The scanner reduces false positives by:
 [+] Vulnerable: 3
 [+] Time taken: 5s
 ```
+
+When using the `-o` flag, all vulnerabilities are saved to individual files plus summary files in the specified directory.
 
 ## Performance
 

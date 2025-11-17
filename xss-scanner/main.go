@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ type Config struct {
 	DiscordWebhook string
 	Concurrency    int
 	Timeout        int
+	OutputDir      string
 }
 
 // XSSContext represents where the reflection occurs
@@ -195,12 +197,14 @@ func main() {
 	concurrency := flag.Int("c", 50, "Number of concurrent requests")
 	timeout := flag.Int("t", 10, "HTTP timeout in seconds")
 	discordWebhook := flag.String("discord", "", "Discord webhook URL for notifications")
+	outputDir := flag.String("o", "", "Output directory to save results")
 	flag.Parse()
 
 	if *urlFile == "" {
-		fmt.Println("Usage: xss-scanner -f <url-file> [-c concurrency] [-t timeout] [-discord webhook-url]")
+		fmt.Println("Usage: xss-scanner -f <url-file> [-c concurrency] [-t timeout] [-discord webhook-url] [-o output-dir]")
 		fmt.Println("\nExample:")
 		fmt.Println("  xss-scanner -f urls.txt -c 50 -discord https://discord.com/api/webhooks/...")
+		fmt.Println("  xss-scanner -f urls.txt -o results")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
@@ -214,9 +218,21 @@ func main() {
 	if *discordWebhook != "" {
 		config.DiscordWebhook = *discordWebhook
 	}
+	if *outputDir != "" {
+		config.OutputDir = *outputDir
+	}
 
 	if config.DiscordWebhook != "" {
 		fmt.Printf("[+] Discord notifications enabled\n")
+	}
+
+	// Create output directory if specified
+	if config.OutputDir != "" {
+		if err := os.MkdirAll(config.OutputDir, 0755); err != nil {
+			fmt.Printf("[-] Error creating output directory: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("[+] Results will be saved to: %s\n", config.OutputDir)
 	}
 
 	// Read URLs from file
@@ -605,6 +621,106 @@ func reportVulnerability(vuln Vulnerability) {
 
 	if config.DiscordWebhook != "" {
 		sendDiscordNotification(vuln)
+	}
+
+	// Save to file if output directory is specified
+	if config.OutputDir != "" {
+		saveVulnerabilityToFile(vuln, contextName)
+	}
+}
+
+func saveVulnerabilityToFile(vuln Vulnerability, contextName string) {
+	// Create a safe filename from URL
+	timestamp := time.Now().Format("20060102-150405")
+	parsedURL, _ := url.Parse(vuln.URL)
+	hostname := parsedURL.Host
+	if hostname == "" {
+		hostname = "unknown"
+	}
+
+	// Replace unsafe characters
+	safeHostname := strings.ReplaceAll(hostname, ":", "_")
+	safeHostname = strings.ReplaceAll(safeHostname, "/", "_")
+	safeParam := strings.ReplaceAll(vuln.Parameter, "/", "_")
+	safeParam = strings.ReplaceAll(safeParam, ":", "_")
+
+	baseFilename := fmt.Sprintf("%s_%s_%s_%s", timestamp, safeHostname, safeParam, strings.ReplaceAll(contextName, " ", "_"))
+
+	// Save as JSON
+	jsonFilename := filepath.Join(config.OutputDir, baseFilename+".json")
+	jsonData := map[string]interface{}{
+		"timestamp": time.Now().Format(time.RFC3339),
+		"url":       vuln.URL,
+		"parameter": vuln.Parameter,
+		"context":   contextName,
+		"payload":   vuln.Payload,
+	}
+
+	jsonBytes, err := json.MarshalIndent(jsonData, "", "  ")
+	if err == nil {
+		os.WriteFile(jsonFilename, jsonBytes, 0644)
+	}
+
+	// Save as text
+	txtFilename := filepath.Join(config.OutputDir, baseFilename+".txt")
+	textData := fmt.Sprintf(`XSS Vulnerability Report
+========================
+Timestamp: %s
+URL: %s
+Parameter: %s
+Context: %s
+Payload: %s
+
+Reproduction Steps:
+1. Navigate to: %s
+2. Parameter '%s' is vulnerable to XSS
+3. Test payload: %s
+
+Severity: High (Reflected XSS)
+`,
+		time.Now().Format(time.RFC3339),
+		vuln.URL,
+		vuln.Parameter,
+		contextName,
+		vuln.Payload,
+		vuln.URL,
+		vuln.Parameter,
+		vuln.Payload,
+	)
+
+	os.WriteFile(txtFilename, []byte(textData), 0644)
+
+	// Append to summary file
+	summaryFilename := filepath.Join(config.OutputDir, "summary.txt")
+	summaryEntry := fmt.Sprintf("[%s] %s | Param: %s | Context: %s | Payload: %s\n",
+		time.Now().Format("2006-01-02 15:04:05"),
+		vuln.URL,
+		vuln.Parameter,
+		contextName,
+		vuln.Payload,
+	)
+
+	f, err := os.OpenFile(summaryFilename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		f.WriteString(summaryEntry)
+		f.Close()
+	}
+
+	// Append to JSON summary file
+	jsonSummaryFilename := filepath.Join(config.OutputDir, "summary.json")
+	var allVulns []map[string]interface{}
+
+	// Read existing vulnerabilities
+	if existingData, err := os.ReadFile(jsonSummaryFilename); err == nil {
+		json.Unmarshal(existingData, &allVulns)
+	}
+
+	// Append new vulnerability
+	allVulns = append(allVulns, jsonData)
+
+	// Write back
+	if jsonBytes, err := json.MarshalIndent(allVulns, "", "  "); err == nil {
+		os.WriteFile(jsonSummaryFilename, jsonBytes, 0644)
 	}
 }
 
