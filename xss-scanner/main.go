@@ -47,6 +47,7 @@ type Vulnerability struct {
 	Parameter       string
 	Context         XSSContext
 	Payload         string
+	POCURL          string
 	ReflectionPoint string
 }
 
@@ -492,7 +493,8 @@ func testPayloadsForContext(targetURL, param string, context XSSContext, origina
 
 	// Test each payload
 	for _, payload := range payloads {
-		if testPayload(targetURL, param, payload, context) {
+		success, pocURL := testPayload(targetURL, param, payload, context)
+		if success {
 			atomic.AddInt64(&stats.vulnerable, 1)
 
 			vuln := Vulnerability{
@@ -500,6 +502,7 @@ func testPayloadsForContext(targetURL, param string, context XSSContext, origina
 				Parameter: param,
 				Context:   context,
 				Payload:   payload,
+				POCURL:    pocURL,
 			}
 
 			// Check if already reported
@@ -514,11 +517,11 @@ func testPayloadsForContext(targetURL, param string, context XSSContext, origina
 	}
 }
 
-func testPayload(targetURL, param, payload string, context XSSContext) bool {
+func testPayload(targetURL, param, payload string, context XSSContext) (bool, string) {
 	// Inject payload
 	parsed, err := url.Parse(targetURL)
 	if err != nil {
-		return false
+		return false, ""
 	}
 
 	q := parsed.Query()
@@ -529,11 +532,14 @@ func testPayload(targetURL, param, payload string, context XSSContext) bool {
 	// Make request
 	_, body, err := makeRequest(testURL)
 	if err != nil {
-		return false
+		return false, ""
 	}
 
 	// Validate if payload is present AND in exploitable position
-	return validateXSS(body, payload, context)
+	if validateXSS(body, payload, context) {
+		return true, testURL
+	}
+	return false, ""
 }
 
 func validateXSS(body string, payload string, context XSSContext) bool {
@@ -545,20 +551,24 @@ func validateXSS(body string, payload string, context XSSContext) bool {
 		return false
 	}
 
+	// CRITICAL: Check if the payload is HTML-encoded in the response
+	// This is the main cause of false positives
+	if isPayloadHTMLEncoded(body, payload) {
+		return false
+	}
+
 	// Context-specific validation
 	switch context {
 	case ContextHTMLBody:
-		// Check if script tag or event handler is present
-		if strings.Contains(payloadLower, "<script") ||
-		   strings.Contains(payloadLower, "onerror") ||
-		   strings.Contains(payloadLower, "onload") ||
-		   strings.Contains(payloadLower, "onfocus") ||
-		   strings.Contains(payloadLower, "<svg") ||
-		   strings.Contains(payloadLower, "<img") {
-			// Make sure it's not HTML encoded
-			if strings.Contains(body, "&lt;") || strings.Contains(body, "&#") {
-				return false
-			}
+		// Check if script tag or event handler is present in BOTH payload and response
+		hasScriptTag := strings.Contains(payloadLower, "<script") && strings.Contains(bodyLower, "<script")
+		hasSVG := strings.Contains(payloadLower, "<svg") && strings.Contains(bodyLower, "<svg")
+		hasImg := strings.Contains(payloadLower, "<img") && strings.Contains(bodyLower, "<img")
+		hasEventHandler := (strings.Contains(payloadLower, "onerror=") ||
+							strings.Contains(payloadLower, "onload=") ||
+							strings.Contains(payloadLower, "onfocus="))
+
+		if hasScriptTag || hasSVG || hasImg || hasEventHandler {
 			return true
 		}
 
@@ -599,6 +609,66 @@ func validateXSS(body string, payload string, context XSSContext) bool {
 	return false
 }
 
+// isPayloadHTMLEncoded checks if the specific payload is HTML-encoded in the response
+func isPayloadHTMLEncoded(body, payload string) bool {
+	// Check for common HTML encoding patterns that would break the payload
+
+	// Check if < is encoded as &lt;
+	if strings.Contains(payload, "<") {
+		encodedPayload := strings.ReplaceAll(payload, "<", "&lt;")
+		if strings.Contains(body, encodedPayload) {
+			return true
+		}
+		// Also check for other encoding variants
+		encodedPayload = strings.ReplaceAll(payload, "<", "&#60;")
+		if strings.Contains(body, encodedPayload) {
+			return true
+		}
+		encodedPayload = strings.ReplaceAll(payload, "<", "&#x3c;")
+		if strings.Contains(strings.ToLower(body), strings.ToLower(encodedPayload)) {
+			return true
+		}
+	}
+
+	// Check if > is encoded as &gt;
+	if strings.Contains(payload, ">") {
+		encodedPayload := strings.ReplaceAll(payload, ">", "&gt;")
+		if strings.Contains(body, encodedPayload) {
+			return true
+		}
+		encodedPayload = strings.ReplaceAll(payload, ">", "&#62;")
+		if strings.Contains(body, encodedPayload) {
+			return true
+		}
+	}
+
+	// Check if " is encoded
+	if strings.Contains(payload, `"`) {
+		encodedPayload := strings.ReplaceAll(payload, `"`, "&quot;")
+		if strings.Contains(body, encodedPayload) {
+			return true
+		}
+		encodedPayload = strings.ReplaceAll(payload, `"`, "&#34;")
+		if strings.Contains(body, encodedPayload) {
+			return true
+		}
+	}
+
+	// Check if ' is encoded
+	if strings.Contains(payload, `'`) {
+		encodedPayload := strings.ReplaceAll(payload, `'`, "&#39;")
+		if strings.Contains(body, encodedPayload) {
+			return true
+		}
+		encodedPayload = strings.ReplaceAll(payload, `'`, "&#x27;")
+		if strings.Contains(strings.ToLower(body), strings.ToLower(encodedPayload)) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func containsPartialPayload(body, payload string) bool {
 	// Check if payload components are present (for encoded payloads)
 	keywords := []string{"alert", "script", "onerror", "onload", "svg", "img"}
@@ -618,6 +688,7 @@ func reportVulnerability(vuln Vulnerability) {
 	fmt.Printf("    Parameter: %s\n", vuln.Parameter)
 	fmt.Printf("    Context: %s\n", contextName)
 	fmt.Printf("    Payload: %s\n", vuln.Payload)
+	fmt.Printf("    POC URL: %s\n", vuln.POCURL)
 
 	if config.DiscordWebhook != "" {
 		sendDiscordNotification(vuln)
@@ -654,6 +725,7 @@ func saveVulnerabilityToFile(vuln Vulnerability, contextName string) {
 		"parameter": vuln.Parameter,
 		"context":   contextName,
 		"payload":   vuln.Payload,
+		"poc_url":   vuln.POCURL,
 	}
 
 	jsonBytes, err := json.MarshalIndent(jsonData, "", "  ")
@@ -671,10 +743,15 @@ Parameter: %s
 Context: %s
 Payload: %s
 
+POC (Proof of Concept):
+Copy and paste this URL in your browser to test:
+%s
+
 Reproduction Steps:
-1. Navigate to: %s
-2. Parameter '%s' is vulnerable to XSS
-3. Test payload: %s
+1. Copy the POC URL above
+2. Paste it in your browser's address bar
+3. Press Enter
+4. The XSS payload should execute
 
 Severity: High (Reflected XSS)
 `,
@@ -683,21 +760,20 @@ Severity: High (Reflected XSS)
 		vuln.Parameter,
 		contextName,
 		vuln.Payload,
-		vuln.URL,
-		vuln.Parameter,
-		vuln.Payload,
+		vuln.POCURL,
 	)
 
 	os.WriteFile(txtFilename, []byte(textData), 0644)
 
 	// Append to summary file
 	summaryFilename := filepath.Join(config.OutputDir, "summary.txt")
-	summaryEntry := fmt.Sprintf("[%s] %s | Param: %s | Context: %s | Payload: %s\n",
+	summaryEntry := fmt.Sprintf("[%s] %s | Param: %s | Context: %s | Payload: %s | POC: %s\n",
 		time.Now().Format("2006-01-02 15:04:05"),
 		vuln.URL,
 		vuln.Parameter,
 		contextName,
 		vuln.Payload,
+		vuln.POCURL,
 	)
 
 	f, err := os.OpenFile(summaryFilename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -772,6 +848,11 @@ func sendDiscordNotification(vuln Vulnerability) {
 			{
 				"name":   "Payload",
 				"value":  fmt.Sprintf("```%s```", vuln.Payload),
+				"inline": false,
+			},
+			{
+				"name":   "POC URL",
+				"value":  fmt.Sprintf("```%s```", vuln.POCURL),
 				"inline": false,
 			},
 		},
