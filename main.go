@@ -8,12 +8,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -91,6 +93,9 @@ var redirectParams = []string{
 var testDomains = []string{"evil.com", "google.com", "redirect-test.com"}
 
 func init() {
+	// Suppress HTTP client error logs (like "Unsolicited response")
+	log.SetOutput(io.Discard)
+
 	// Create HTTP client with timeout and no redirect following
 	httpClient = &http.Client{
 		Timeout: 10 * time.Second,
@@ -137,11 +142,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("%s[*] Loaded %d URLs to test%s\n\n", ColorGreen, len(urls), ColorReset)
+	// Filter URLs - only test those with parameters
+	filteredURLs := filterURLsWithParams(urls)
+	fmt.Printf("%s[*] Loaded %d URLs total%s\n", ColorBlue, len(urls), ColorReset)
+	fmt.Printf("%s[*] URLs with parameters: %d (%.1f%%)%s\n\n", ColorGreen, len(filteredURLs),
+		float64(len(filteredURLs))/float64(len(urls))*100, ColorReset)
+
+	if len(filteredURLs) == 0 {
+		fmt.Printf("%s[!] No URLs with parameters found. Exiting.%s\n", ColorYellow, ColorReset)
+		os.Exit(0)
+	}
 
 	// Start testing
 	startTime := time.Now()
-	testURLs(urls)
+	testURLs(filteredURLs)
 
 	// Print summary
 	elapsed := time.Since(startTime)
@@ -183,10 +197,35 @@ func readURLsFromFile(filename string) ([]string, error) {
 	return urls, scanner.Err()
 }
 
+func filterURLsWithParams(urls []string) []string {
+	var filtered []string
+	for _, u := range urls {
+		parsed, err := url.Parse(u)
+		if err != nil {
+			continue
+		}
+		// Only include URLs that have query parameters
+		if len(parsed.Query()) > 0 {
+			filtered = append(filtered, u)
+		}
+	}
+	return filtered
+}
+
 func testURLs(urls []string) {
 	// Use semaphore pattern for concurrency control
 	sem := make(chan struct{}, config.Threads)
 	var wg sync.WaitGroup
+
+	// Progress tracking
+	var processed int64
+	total := int64(len(urls))
+	progressInterval := total / 100
+	if progressInterval < 100 {
+		progressInterval = 100
+	}
+
+	startTime := time.Now()
 
 	for _, targetURL := range urls {
 		wg.Add(1)
@@ -196,10 +235,23 @@ func testURLs(urls []string) {
 			defer func() { <-sem }() // Release
 
 			testURL(u)
+
+			// Update progress
+			current := atomic.AddInt64(&processed, 1)
+			if current%progressInterval == 0 || current == total {
+				elapsed := time.Since(startTime)
+				rate := float64(current) / elapsed.Seconds()
+				remaining := time.Duration(float64(total-current)/rate) * time.Second
+
+				fmt.Printf("\r%s[*] Progress: %d/%d (%.1f%%) | Found: %d | Rate: %.0f URL/s | ETA: %s%s",
+					ColorYellow, current, total, float64(current)/float64(total)*100,
+					len(vulnerabilities), rate, remaining.Round(time.Second), ColorReset)
+			}
 		}(targetURL)
 	}
 
 	wg.Wait()
+	fmt.Println() // New line after progress
 }
 
 func testURL(targetURL string) {
