@@ -190,6 +190,10 @@ func readURLsFromFile(filename string) ([]string, error) {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line != "" && !strings.HasPrefix(line, "#") {
+			// Normalize URL - add http:// if missing
+			if !strings.HasPrefix(line, "http://") && !strings.HasPrefix(line, "https://") {
+				line = "http://" + line
+			}
 			urls = append(urls, line)
 		}
 	}
@@ -397,10 +401,19 @@ func checkOpenRedirect(testURL, originalURL, payload string) (bool, string) {
 		origDomain := strings.ToLower(origURL.Host)
 		redirectDomain := strings.ToLower(redirectURL.Host)
 
-		// Check if redirecting to test domain
+		// First check if redirecting to our test domains (high confidence)
 		for _, domain := range testDomains {
 			if (redirectDomain == domain || strings.HasSuffix(redirectDomain, "."+domain)) && redirectDomain != origDomain {
 				return true, fmt.Sprintf("HTTP %d redirect to external domain: %s", resp.StatusCode, location)
+			}
+		}
+
+		// Also check if redirecting to ANY external domain (not just test domains)
+		// This catches real-world redirects like bing.com, etc.
+		if redirectDomain != "" && redirectDomain != origDomain && !strings.HasSuffix(origDomain, redirectDomain) {
+			// Make sure it's not a subdomain of the original
+			if !strings.HasSuffix(redirectDomain, "."+origDomain) {
+				return true, fmt.Sprintf("HTTP %d redirect to external domain: %s (domain: %s)", resp.StatusCode, location, redirectDomain)
 			}
 		}
 	}
@@ -421,10 +434,19 @@ func checkOpenRedirect(testURL, originalURL, payload string) (bool, string) {
 			redirectURL := matches[1]
 			if parsedRedir, err := url.Parse(redirectURL); err == nil {
 				redirDomain := strings.ToLower(parsedRedir.Host)
+				origURL, _ := url.Parse(originalURL)
+				origDomain := strings.ToLower(origURL.Host)
+
+				// Check test domains first
 				for _, domain := range testDomains {
 					if redirDomain == domain || strings.HasSuffix(redirDomain, "."+domain) {
 						return true, fmt.Sprintf("Meta refresh redirect to: %s", redirectURL)
 					}
+				}
+
+				// Check ANY external domain
+				if redirDomain != "" && redirDomain != origDomain && !strings.HasSuffix(redirDomain, "."+origDomain) {
+					return true, fmt.Sprintf("Meta refresh redirect to external domain: %s (domain: %s)", redirectURL, redirDomain)
 				}
 			}
 		}
@@ -444,10 +466,19 @@ func checkOpenRedirect(testURL, originalURL, payload string) (bool, string) {
 				redirectURL := matches[1]
 				if parsedRedir, err := url.Parse(redirectURL); err == nil {
 					redirDomain := strings.ToLower(parsedRedir.Host)
+					origURL, _ := url.Parse(originalURL)
+					origDomain := strings.ToLower(origURL.Host)
+
+					// Check test domains first
 					for _, domain := range testDomains {
 						if redirDomain == domain || strings.HasSuffix(redirDomain, "."+domain) {
 							return true, fmt.Sprintf("JavaScript redirect to: %s", redirectURL)
 						}
+					}
+
+					// Check ANY external domain
+					if redirDomain != "" && redirDomain != origDomain && !strings.HasSuffix(redirDomain, "."+origDomain) {
+						return true, fmt.Sprintf("JavaScript redirect to external domain: %s (domain: %s)", redirectURL, redirDomain)
 					}
 				}
 			}
