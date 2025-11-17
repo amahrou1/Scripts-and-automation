@@ -574,6 +574,7 @@ func validateXSS(body string, payload string, context XSSContext) bool {
 	switch context {
 	case ContextHTMLBody:
 		// Check if script tag or event handler is present in BOTH payload and response
+		// AND verify they appear with the actual dangerous code (alert, prompt, etc.)
 		hasScriptTag := strings.Contains(payloadLower, "<script") && strings.Contains(bodyLower, "<script")
 		hasSVG := strings.Contains(payloadLower, "<svg") && strings.Contains(bodyLower, "<svg")
 		hasImg := strings.Contains(payloadLower, "<img") && strings.Contains(bodyLower, "<img")
@@ -581,7 +582,17 @@ func validateXSS(body string, payload string, context XSSContext) bool {
 							strings.Contains(payloadLower, "onload=") ||
 							strings.Contains(payloadLower, "onfocus="))
 
-		if hasScriptTag || hasSVG || hasImg || hasEventHandler {
+		// For script/svg/img tags, also verify they contain executable code (alert/prompt/confirm)
+		if hasScriptTag {
+			// Make sure alert/prompt/confirm appears in the response
+			if strings.Contains(bodyLower, "alert") ||
+			   strings.Contains(bodyLower, "prompt") ||
+			   strings.Contains(bodyLower, "confirm") {
+				return true
+			}
+		}
+
+		if hasSVG || hasImg || hasEventHandler {
 			return true
 		}
 
@@ -596,11 +607,34 @@ func validateXSS(body string, payload string, context XSSContext) bool {
 		}
 
 	case ContextJavaScriptString:
-		// Check if we broke out of string
-		if strings.Contains(payloadLower, `";`) ||
-		   strings.Contains(payloadLower, `';`) ||
-		   strings.Contains(payloadLower, "</script>") {
-			return true
+		// For </script><script>alert(1)</script> payload to work:
+		// 1. The closing </script> must appear in response
+		// 2. A NEW <script> tag must appear that would execute
+		// Both must be unencoded (not &lt;script&gt;)
+
+		if strings.Contains(payloadLower, "</script>") {
+			// Verify the closing </script> actually appears unencoded in response
+			if strings.Contains(bodyLower, "</script>") {
+				// Verify a new <script> tag appears after it
+				if strings.Contains(bodyLower, "</script>") && strings.Contains(bodyLower, "<script>") {
+					// Check they appear in the right order (close then open)
+					closeIdx := strings.Index(bodyLower, "</script>")
+					openIdx := strings.LastIndex(bodyLower, "<script>")
+					if openIdx > closeIdx {
+						return true
+					}
+				}
+			}
+		}
+
+		// For ";alert(1)// or ';alert(1)// payloads
+		// Verify the quote and semicolon actually break out of the string context
+		if (strings.Contains(payloadLower, `";`) || strings.Contains(payloadLower, `';`)) &&
+		   (strings.Contains(bodyLower, `";`) || strings.Contains(bodyLower, `';`)) {
+			// Make sure alert actually appears unencoded
+			if strings.Contains(bodyLower, "alert") {
+				return true
+			}
 		}
 
 	case ContextJavaScript:
