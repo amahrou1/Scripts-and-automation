@@ -1,0 +1,34 @@
+# Example URLs for XSS testing
+# Only URLs with parameters will be tested
+
+# E-commerce examples
+https://example.com/search?q=test
+https://shop.example.com/products?category=electronics&sort=price
+https://store.example.com/item?id=123&ref=homepage
+
+# Social media examples
+https://social.example.com/profile?user=john
+https://forum.example.com/thread?id=456&page=1
+https://blog.example.com/post?title=hello-world&author=admin
+
+# Search and filter examples
+https://example.com/results?query=test&filter=all
+https://example.com/api/search?q=xss&limit=10
+https://example.com/find?name=user&type=customer
+
+# Redirect and return examples (often vulnerable)
+https://example.com/login?return=/dashboard
+https://example.com/redirect?url=https://example.com
+https://example.com/out?target=https://external.com
+
+# Complex parameter examples
+https://example.com/page?id=1&action=view&debug=true
+https://api.example.com/v1/data?callback=handleData&format=json
+https://example.com/tracker?event=click&data=test&timestamp=123456
+
+# Note: Replace these with real URLs from your target
+# Gather URLs using:
+# - waybackurls domain.com
+# - gau domain.com
+# - katana -u https://domain.com
+# - paramspider -d domain.com
