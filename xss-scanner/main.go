@@ -543,29 +543,45 @@ func testPayload(targetURL, param, payload string, context XSSContext) (bool, st
 	testURL := parsed.String()
 
 	// Make request
-	_, body, err := makeRequest(testURL)
+	resp, body, err := makeRequest(testURL)
 	if err != nil {
 		return false, ""
 	}
+	defer resp.Body.Close()
 
 	// Validate if payload is present AND in exploitable position
-	if validateXSS(body, payload, context) {
+	if validateXSS(resp, body, payload, context) {
 		return true, testURL
 	}
 	return false, ""
 }
 
-func validateXSS(body string, payload string, context XSSContext) bool {
+func validateXSS(resp *http.Response, body string, payload string, context XSSContext) bool {
 	bodyLower := strings.ToLower(body)
 	payloadLower := strings.ToLower(payload)
+
+	// CRITICAL CHECK 1: Validate Content-Type (Eliminates most false positives)
+	// Browsers won't execute JavaScript in non-HTML content types
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if strings.Contains(contentType, "application/json") ||
+	   strings.Contains(contentType, "text/plain") ||
+	   strings.Contains(contentType, "application/xml") ||
+	   strings.Contains(contentType, "text/xml") {
+		return false
+	}
+
+	// Check X-Content-Type-Options: nosniff header
+	// This prevents MIME type sniffing, so wrong content-type = no execution
+	if resp.Header.Get("X-Content-Type-Options") == "nosniff" {
+		return false
+	}
 
 	// Check if payload is in response
 	if !strings.Contains(bodyLower, payloadLower) && !containsPartialPayload(bodyLower, payloadLower) {
 		return false
 	}
 
-	// CRITICAL: Check if the payload is HTML-encoded in the response
-	// This is the main cause of false positives
+	// CRITICAL CHECK 2: Verify payload is not HTML-encoded
 	if isPayloadHTMLEncoded(body, payload) {
 		return false
 	}
@@ -573,26 +589,71 @@ func validateXSS(body string, payload string, context XSSContext) bool {
 	// Context-specific validation
 	switch context {
 	case ContextHTMLBody:
-		// Check if script tag or event handler is present in BOTH payload and response
-		// AND verify they appear with the actual dangerous code (alert, prompt, etc.)
-		hasScriptTag := strings.Contains(payloadLower, "<script") && strings.Contains(bodyLower, "<script")
-		hasSVG := strings.Contains(payloadLower, "<svg") && strings.Contains(bodyLower, "<svg")
-		hasImg := strings.Contains(payloadLower, "<img") && strings.Contains(bodyLower, "<img")
-		hasEventHandler := (strings.Contains(payloadLower, "onerror=") ||
-							strings.Contains(payloadLower, "onload=") ||
-							strings.Contains(payloadLower, "onfocus="))
+		// STRUCTURAL VALIDATION: Verify complete payload structure exists
 
-		// For script/svg/img tags, also verify they contain executable code (alert/prompt/confirm)
-		if hasScriptTag {
-			// Make sure alert/prompt/confirm appears in the response
-			if strings.Contains(bodyLower, "alert") ||
-			   strings.Contains(bodyLower, "prompt") ||
-			   strings.Contains(bodyLower, "confirm") {
+		// For SVG payloads with script tags
+		if strings.Contains(payloadLower, "<svg") && strings.Contains(payloadLower, "xmlns") {
+			// Must have: <svg + xmlns + <script> + alert/prompt + </script> + </svg>
+			if !strings.Contains(bodyLower, "<svg") {
+				return false
+			}
+			if !strings.Contains(bodyLower, "xmlns") {
+				return false
+			}
+			if !strings.Contains(bodyLower, "<script>") || !strings.Contains(bodyLower, "</script>") {
+				return false
+			}
+			// Verify script tags appear in correct order (open before close)
+			scriptOpenIdx := strings.Index(bodyLower, "<script>")
+			scriptCloseIdx := strings.Index(bodyLower, "</script>")
+			if scriptOpenIdx == -1 || scriptCloseIdx == -1 || scriptOpenIdx >= scriptCloseIdx {
+				return false
+			}
+			// Verify executable code between script tags
+			scriptContent := bodyLower[scriptOpenIdx+8:scriptCloseIdx]
+			if !strings.Contains(scriptContent, "alert") &&
+			   !strings.Contains(scriptContent, "prompt") &&
+			   !strings.Contains(scriptContent, "confirm") {
+				return false
+			}
+			// Verify closing </svg> exists
+			if !strings.Contains(bodyLower, "</svg>") {
+				return false
+			}
+			return true
+		}
+
+		// For regular script tags
+		if strings.Contains(payloadLower, "<script>") {
+			if !strings.Contains(bodyLower, "<script>") || !strings.Contains(bodyLower, "</script>") {
+				return false
+			}
+			scriptOpenIdx := strings.Index(bodyLower, "<script>")
+			scriptCloseIdx := strings.Index(bodyLower, "</script>")
+			if scriptOpenIdx >= scriptCloseIdx {
+				return false
+			}
+			scriptContent := bodyLower[scriptOpenIdx+8:scriptCloseIdx]
+			if !strings.Contains(scriptContent, "alert") &&
+			   !strings.Contains(scriptContent, "prompt") &&
+			   !strings.Contains(scriptContent, "confirm") {
+				return false
+			}
+			return true
+		}
+
+		// For img/event handlers
+		if strings.Contains(payloadLower, "<img") && strings.Contains(payloadLower, "onerror") {
+			if strings.Contains(bodyLower, "<img") &&
+			   strings.Contains(bodyLower, "onerror") &&
+			   (strings.Contains(bodyLower, "alert") || strings.Contains(bodyLower, "prompt")) {
 				return true
 			}
 		}
 
-		if hasSVG || hasImg || hasEventHandler {
+		// For other event handlers
+		if strings.Contains(payloadLower, "onload=") ||
+		   strings.Contains(payloadLower, "onfocus=") {
 			return true
 		}
 
